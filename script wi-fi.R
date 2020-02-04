@@ -1,11 +1,18 @@
 ### Location prediction Based on Wireless Application Protocol (WAPS)
+if ("pacman" %in% rownames(installed.packages()) == FALSE) {
+  install.packages("pacman")
+} else{
+  library(pacman)
+  rm(list = ls(all = TRUE))
+  p_unload(pacman::p_loaded(), character.only = TRUE)
 pacman::p_load(caret,ggplot2,dplyr,lubridate, plotly,readr,rgl,rpart,class,randomForest)
+}
 
 # LOADING DATASETS--------------------------------------------------------------------------
 df_location_train <- read.csv("trainingData.csv")
 df_location_validation <- read.csv("validationData.csv")
-df_location_train$IsTrainSet <- TRUE
-df_location_validation$IsTrainSet <- FALSE
+df_location_train$in_given_train <- TRUE
+df_location_validation$in_given_train <- FALSE
 df_location_train_and_valid <- rbind(df_location_train,df_location_validation )
 
 ### Dataset Info 
@@ -25,31 +32,25 @@ df_location_train_and_valid <- rbind(df_location_train,df_location_validation )
 
 #INSPECTING, PREPROCESSING,VISUALIZATIONS-----------------------------------------------------------------
 # Inspecting the dataset
-str(df_location_train_and_valid [521:529])
+str(df_location_train_and_valid [521:530])
 
 # Transform Data Types and levels
-df_location_train_and_valid [523:528] <- lapply(df_location_train_and_valid [523:528], factor) 
-df_location_train_and_valid $TIMESTAMP <- as.POSIXct(as.numeric(df_location_train_and_valid$TIMESTAMP), origin = '1970-01-01', tz = 'GMT')
+df_location_train_and_valid[523:528] <- lapply(df_location_train_and_valid [523:528], factor) # to factors
+df_location_train_and_valid$TIMESTAMP <- as.POSIXct(as.numeric(df_location_train_and_valid$TIMESTAMP), origin = '1970-01-01', tz = 'GMT')
+# get rid of level 0 for building and floor as it migth be misleading
 df_location_train_and_valid$FLOOR <- recode(df_location_train_and_valid$FLOOR,  "0" = "1", "1"="2" , "2"="3" , "3"="4", "4" = "5")
 df_location_train_and_valid$BUILDINGID <- recode(df_location_train_and_valid$BUILDINGID, "0" = "1", "1"="2" , "2"="3")
 
-
-# Removing duplicated Rows
-sum(duplicated(df_location_train_and_valid)) #637 duplicated
-sum(duplicated(df_location_validation)) # all the duplicated rows are in test so we will remove them 
+# Removing duplicated Rows #637 duplicated
+sum(duplicated(df_location_train_and_valid)) 
 df_location_train_and_valid <- distinct(df_location_train_and_valid)
 
 # Checking Missing Values
-sum(is.na(df_location_train_and_valid)) #No Missing Values
+anyNA(df_location_train_and_valid) #No Missing Values
 
 #  Ploting the building have the same shape as campus techno Universitat Jaume I where the dataset was colected
 #https://www.google.es/maps/place/Jaume+I+University/@39.9915504,-0.0682044,516a,35y,32.49h,14.15t/data=!3m1!1e3!4m5!3m4!1s0x0:0x1368bf53b3a7fb3f!8m2!3d39.9945711!4d-0.0689003
 #lat and long are in EPSG:3857 WGS 84 / Pseudo-Mercator Coord System 
-ggplot(df_location_train_and_valid, aes(LONGITUDE,LATITUDE,colour=BUILDINGID)) +
-  geom_density_2d()+
-  scale_colour_discrete(drop=TRUE,
-                        limits = levels(df_location_train_and_valid$BUILDINGID))+
-  labs(title ="Plotted location")
 
 # 3D plot
 plot_ly(df_location_train_and_valid, x = ~LONGITUDE, y = ~LATITUDE, z = ~FLOOR, color = ~BUILDINGID, colors = c('#BF382A', '#0C4B8E',"#33FFAA")) %>%
@@ -67,44 +68,42 @@ plot_ly(df_location_train_and_valid, x = ~LONGITUDE, y = ~LATITUDE, z = ~FLOOR, 
          
   )
 
-# NUMBER samples/ building, floor
+# NUMBER samples/ building, floor plot
+# The train set doesne't look representative, especially in the first floor for all buildings
+# also proportions are not exactly right 
+# for these reasons I chose to recreate the training testing and validations sets further on
 ggplot(df_location_train_and_valid, aes(x=BUILDINGID, fill=FLOOR)) +
   geom_bar()+
-  facet_grid(FLOOR~IsTrainSet,labeller = label_both)+
+  facet_grid(FLOOR~in_given_train,labeller = label_both)+
   labs(title ="Sample Sizes", x = "Building", y = "")
 
 
-# 100 is the no signal values, we will change them to -110
-WAPS <- grep("WAP", names(df_location_train_and_valid), value=T) #gets all the waps
-df_location_train_and_valid[,WAPS] <- sapply(df_location_train_and_valid[,WAPS],function(x) ifelse(x==100,-105,x)) # changes all 100 to 105
+# 100 is the no signal values, we will change them to -110 and then bring them all to positive
+# so the values make sense so 0 = no signal 
+WAPS <- grep("WAP", names(df_location_train_and_valid), value=T) #gets all the wap names
+df_location_train_and_valid[,WAPS] <- sapply(df_location_train_and_valid[,WAPS],function(x) ifelse(x==100,-105,x)) # changes all values of 100 to 105
 df_location_train_and_valid[,WAPS] <- df_location_train_and_valid[,WAPS] + 105 # flips all waps to positive values
 
-#Select  WAPS that have all 0 signal for all location and remove them
-WAPS_VarTrain <- nearZeroVar(df_location_train_and_valid[df_location_train_and_valid$IsTrainSet==TRUE,WAPS], saveMetrics=TRUE)
-WAPS_VarValid <- nearZeroVar(df_location_train_and_valid[df_location_train_and_valid$IsTrainSet==FALSE,WAPS], saveMetrics=TRUE)
-df_location_train_and_valid <- df_location_train_and_valid[-which(WAPS_VarTrain$zeroVar==TRUE | 
-                                                                    WAPS_VarValid$zeroVar==TRUE)]  
+# Filter WAPS that have all 0 signal for all rows and columns and remove them
+# 0 on row means that the user didn't connect to any wap
+# 0 on column means that the WAP was not connected to by any user
+# we will do this for this dataset but we will take account of the fact that in the blind dataset this wap migth be connected to
+df_location_train_and_valid <- filter(df_location_train_and_valid[which(rowSums(df_location_train_and_valid[,WAPS])!=0),]) 
+#df_location_train_and_valid <- filter(df_location_train_and_valid[,-which(colSums(df_location_train_and_valid[,WAPS]) == 0)])# apparently no cols with all values 0
 
-#Remove rows with no variance
-# New WAPS
-WAPS <- grep("WAP", names(df_location_train_and_valid), value=T) #gets all the waps remaining after removing the 0 ones
-
-# Filter Rows with all Signals = 0
-df_location_train_and_valid <- df_location_train_and_valid %>% 
-  filter(apply(df_location_train_and_valid[WAPS], 1, function(x)length(unique(x)))>1)
-
-# Add closest wap column
-df_location_train_and_valid$CLOSESTWAP = apply(df_location_train_and_valid[,1:312], 1, function(x) names(x)[which.max(x)])
-df_location_train_and_valid$CLOSESTWAP <- as.numeric(df_location_train_and_valid$CLOSESTWAP )
-# Add highest signal column
-df_location_train_and_valid$HIGHESTSIGNAL = apply(df_location_train_and_valid[,1:312], 1, function(x) max(x))
-
+# Add highest, lowest  signal column and number of waps connected to
+df_location_train_and_valid$HIGHESTSIGNAL = apply(df_location_train_and_valid[,1:521], 1, function(x) max(x))
+df_location_train_and_valid$LOWESTSIGNAL = apply(df_location_train_and_valid[,1:521], 1, function(x) min(x[x > 0]))
+df_location_train_and_valid$NUMBERCONNECTIONS = apply(df_location_train_and_valid[,1:521], 1, function(x) sum(x > 0)) 
 
 # Drop the unnecessary columns and df
-df_location_train_and_valid [ ,c('SPACEID', 'USERID','PHONEID','RELATIVEPOSITION','TIMESTAMP','IsTrainSet')] <- list(NULL)
-rm(WAPS,WAPS_VarTrain, WAPS_VarValid)
+df_location_train_and_valid [ ,c('SPACEID', 'USERID','PHONEID','RELATIVEPOSITION','TIMESTAMP','in_given_train')] <- list(NULL)
+rm(WAPS,df_location_train,df_location_validation)
 
-# Building the sets for TRAIN,TEST AND VALIDATION # We do this because the initial split was not representative
+# Building the sets for TRAIN,TEST AND VALIDATION 
+# We do this because the initial split was not representative
+# Also we added the validation dataset in order to better evaluate the models
+
 indicesTraining <- createDataPartition(df_location_train_and_valid$BUILDINGID, p = 0.6, list = FALSE)
 dfTraining <- df_location_train_and_valid[ indicesTraining,] # Training Test 60 %
 dfLeftoverTraining <- df_location_train_and_valid[ -indicesTraining,]
@@ -120,11 +119,14 @@ set.seed(123)
 system.time(knnFitTest <- knn(train = dfTraining[ , -which(names(dfTraining) %in% c("LONGITUDE","LATITUDE","FLOOR"))], 
                               test = dfTest[ , -which(names(dfTest) %in% c("LONGITUDE","LATITUDE","FLOOR"))],
                               cl = dfTraining$BUILDINGID, k=3))
+# user  system elapsed 
+# 86.42    0.16   90.21 
 print(knnCMT <- confusionMatrix(knnFitTest, dfTest$BUILDINGID)) # Confusion Matrix
 
 # Check results on validation dataset
 knnFitValid <- knn(train=dfTraining[ , -which(names(dfTraining) %in% c("LONGITUDE","LATITUDE","FLOOR"))], test=dfValidation[ , -which(names(dfValidation) %in% c("LONGITUDE","LATITUDE","FLOOR"))],
                    cl=dfTraining$BUILDINGID, k=3)
+
 print(knnCMV <- confusionMatrix(knnFitValid, dfValidation$BUILDINGID)) # Confusion Matrix
 
 # Optimize KNN --- ACC AND KAPPA GO DOWN AFTER K=3 BOTH IN TEST AND VALID
@@ -141,12 +143,14 @@ for (i in 1:7){
       ')
 }
 
-# 2. SVM 
+# 2. SVM # 100 % faster than KNN
 set.seed(123)
 ctrl <- trainControl(method="cv", number=10)
 system.time(svmFit <- train(BUILDINGID~., data=dfTraining[ , -which(names(dfTraining) %in% c("LONGITUDE","LATITUDE","FLOOR"))],
                             method='svmLinear',
                             trControl = ctrl)) 
+# user  system elapsed 
+# 16.07    1.16   17.98 
 
 # Check results on validation dataset # 99 % acc  kappa 0.9897  
 svmTest <- predict(svmFit ,newdata = dfTest[ , -which(names(dfTraining) %in% c("LONGITUDE","LATITUDE","FLOOR"))])
@@ -166,30 +170,37 @@ saveRDS(svmFit, file="svmBuilding.rds")
 # We will remove the lat and long from the training as they will be unknown for the actual data 
 # On the blind dataset the building will be added from the previous prediction that has 100 % ACC 
 
-# Check results on test dataset 100 % KAPPA 1
+# Check results on test dataset Accuracy : 0.9951 ,  Kappa : 0.9936  
 set.seed(123)
 system.time(knnFitFloorTest <- knn(train = dfTraining[ , -which(names(dfTraining) %in% c("LONGITUDE","LATITUDE"))], 
                                    test = dfTest[ , -which(names(dfTest) %in% c("LONGITUDE","LATITUDE"))],
                                    cl = dfTraining$FLOOR, k=5))
+# user  system elapsed 
+# 86.35    0.16   89.20 
 print(knnCMTFloor <- confusionMatrix(knnFitFloorTest, dfTest$FLOOR)) # Confusion Matrix
 
-# Check results on validation dataset  99 % KAPPA 0.9987  
+# Check results on validation dataset   Accuracy : 0.9934 , Kappa : 0.9913    
 system.time(knnFitFloorValid <- knn(train = dfTraining[ , -which(names(dfTraining) %in% c("LONGITUDE","LATITUDE"))], 
                                     test = dfValidation[ , -which(names(dfValidation) %in% c("LONGITUDE","LATITUDE"))],
                                     cl = dfTraining$FLOOR, k=5))
+# user  system elapsed 
+# 82.61    0.14   83.77 
 print(knnCMVFloor <- confusionMatrix(knnFitFloorValid , dfValidation$FLOOR)) # Confusion Matrix
 
 # 2. SVM #Longer than KNN
 set.seed(123)
-svmFitFloor <- train(FLOOR~., data=dfTraining[ , -which(names(dfTraining) %in% c("LONGITUDE","LATITUDE"))],
+system.time(svmFitFloor <- train(FLOOR~., data=dfTraining[ , -which(names(dfTraining) %in% c("LONGITUDE","LATITUDE"))],
                      method='svmLinear',
                      trControl = ctrl)
+            )
+# user  system elapsed 
+# 33.89    2.20   37.53 
 
-# Check results on test dataset 98,6 % KAPPA 0.9822  
+# Check results on test dataset Accuracy : 0.9862  ,  Kappa : 0.982   
 svmTestFloor <- predict(svmFitFloor ,newdata = dfTest[ , -which(names(dfTest) %in% c("LONGITUDE","LATITUDE"))])
 print(svmCMTFloor <- confusionMatrix(svmTestFloor , dfTest$FLOOR)) # Confusion Matrix
 
-# Check results on validation dataset 98,7 % KAPPA 0.9825 
+# Check results on validation dataset Accuracy : 0.9825  , Kappa : 0.9772 
 svmValidFloor <- predict(svmFitFloor ,newdata = dfValidation[ , -which(names(dfValidation) %in% c("LONGITUDE","LATITUDE"))])
 print(svmCMVFloor <- confusionMatrix(svmValidFloor, dfValidation$FLOOR)) # Confusion Matrix
 
@@ -198,19 +209,28 @@ saveRDS(svmFitFloor, file="svmFloor.rds")
 
 #MODELS FOR LATITUDE-------------------------------------------------------------------------------
 set.seed(123)
+ctrlRegression <- trainControl(method = "repeatedcv", number = 10,repeats = 3)
 
 # RANDOM FOREST
-system.time(rfFitLatitude <- randomForest(y = dfTraining$LATITUDE, 
-                                          x = dfTraining[ , -which(names(dfTraining) %in% c("LONGITUDE","LATITUDE"))],
-                                          ntrees = 2))
+system.time(rfFitLatitude <- randomForest(x = dfTraining[ ,which(names(dfTraining) %in% c("BUILDINGID","FLOOR","HIGHESTSIGNAL","LOWESTSIGNAL"))],
+                                           y = dfTraining$LATITUDE, 
+                                           ntrees = 1000,
+                                           importance = T,
+                                           mtry = 4))
+# user  system elapsed 
+# 255.47    0.75  266.63 
 
 # Predict and evaluate on Test
-rfTestLatitude <- predict(rfFitLatitude, dfTesting)
-postResample_rfTestLatitude <- postResample(rfTestLatitude, dfTesting$LATITUDE)
+rfTestLatitude <- predict(rfFitLatitude, dfTest)
+postResample_rfTestLatitude <- postResample(rfTestLatitude, dfTest$LATITUDE)
+#       RMSE   Rsquared        MAE 
+# 29.7281733  0.8110647 22.7071191 
 
 # Predict and evaluate on Validation
 rfValidLatitude <- predict(rfFitLatitude, dfValidation)
 postResample_rfValidLatitude <- postResample(rfValidLatitude, dfValidation$LATITUDE)
+# RMSE  Rsquared       MAE 
+# 29.249793  0.818673 22.191096 
 
 # Save absolute errors
 errors_latitude_rf <- cbind((as.data.frame(dfTesting$LATITUDE - rfTestLatitude)),(as.data.frame(dfValidation$LATITUDE - rfValidLatitude)))
@@ -220,51 +240,56 @@ saveRDS(rfFitLatitude, file="rfLatitude.rds")
 
 # SVM
 set.seed(123)
-system.time(svmFitLatitude <- train(LATITUDE~., data=dfTraining[ , -which(names(dfTraining) %in% c("LONGITUDE"))],
+system.time(svmFitLatitude <- train(LATITUDE~.,
+                                    data=dfTraining[ ,which(names(dfTraining) %in% c("LATITUDE","BUILDINGID","FLOOR","HIGHESTSIGNAL","LOWESTSIGNAL","NUMBEROFCONNECTIONS"))],
                                     method='svmLinear',
-                                    trControl = ctrl)) 
+                                    trControl = ctrl) 
+            )
 
-# Check results on validation dataset # 99 % acc  kappa 0.9897  
+# user  system elapsed 
+# 103.47    0.49  106.09 
+
+# Check results on Test dataset  
 svmTestLatItude <- predict(svmFitLatitude ,newdata = dfTest[ , -which(names(dfTraining) %in% c("LONGITUDE"))])
 postResample(svmTestLatItude, dfTest$LATITUDE)
 
-# Check results on validation dataset # 99 % acc kappa 0.9897 
+# RMSE   Rsquared        MAE 
+# 32.2325515  0.7783443 26.3834116 
+
+# Check results on validation dataset 
 svmValidLatitude <- predict(svmFitLatitude ,newdata = dfValidation[ , -which(names(dfTraining) %in% c("LONGITUDE"))])
-postResample(svmvalidLatitude, dfValid$LATITUDE)
+postResample(svmValidLatitude, dfValidation$LATITUDE)
+
+# RMSE   Rsquared        MAE 
+# 32.1597242  0.7829318 26.2658431 
 
 # Save Model
 saveRDS(svmFitLatitude, file="svmLatitude.rds")
 
-# KNN
-
-# Check results on test dataset 
-set.seed(123)
-system.time(knnFitLatitudeTest <- knn(train = dfTraining[ , -which(names(dfTraining) %in% c("LONGITUDE"))], 
-                                      test = dfTest[ , -which(names(dfTest) %in% c("LONGITUDE"))],
-                                      cl = dfTraining$LATITUDE, k=5))
-postResample(knnFitLatitudeTest,dfTest$LATITUDE)
-
-# Check results on validation dataset  99 % KAPPA 0.9987  
-system.time(knnFitLatitudeValid <- knn(train = dfTraining[ , -which(names(dfTraining) %in% c("LONGITUDE"))], 
-                                       test = dfValidation[ , -which(names(dfValidation) %in% c("LONGITUDE"))],
-                                       cl = dfTraining$LATITUDE, k=5))
-postResample(knnFitLatitudeValid,dfTest$LATITUDE)
 
 #MODELS FOR LONGITUDE------------------------------------------------------------------------------
 set.seed(123)
 # RANDOM FOREST
-system.time(rfFitLongitude <- randomForest(y = dfTraining$LONGITUDE, 
-                                           x = dfTraining[ ,which(names(dfTraining) %in% c("LATITUDE","BUILDINGID","FLOOR","CLOSESTWAP","HIGHESTSIGNAL"))],
-                                           ntrees = 500))
+system.time(rfFitLongitude <- randomForest(x = dfTraining[ ,which(names(dfTraining) %in% c("LATITUDE","BUILDINGID","FLOOR","HIGHESTSIGNAL","LOWESTSIGNAL","NUMBERCONNECTION"))],
+                                           y = dfTraining$LONGITUDE, 
+                                           ntrees = 1000,
+                                           importance = T,
+                                           mtry = 5))
                                            
+# user  system elapsed 
+# 251.39    0.76  258.42 
 
 # Predict and evaluate on Test
 rfTestLongitude <- predict(rfFitLongitude, dfTest)
 print(postResample_rfTestLongitude <- postResample(rfTestLongitude, dfTest$LONGITUDE))
+# RMSE Rsquared      MAE 
+# 8.306966 0.995620 1.992130 
 
 # Predict and evaluate on Validation
 rfValidLongitude <- predict(rfFitLongitude, dfValidation)
 print(postResample_rfValidLongitude<- postResample(rfValidLongitude, dfValidation$LONGITUDE))
+# RMSE  Rsquared       MAE 
+# 7.4855428 0.9964204 1.8185214
 
 # Save absolute errors
 errors_latitude_rf <- cbind((as.data.frame(dfTest$LONGITUDE - rfTestLongitude)),(as.data.frame(dfValidation$LONGITUDE - rfValidLongitude)))
@@ -273,7 +298,7 @@ errors_latitude_rf <- cbind((as.data.frame(dfTest$LONGITUDE - rfTestLongitude)),
 saveRDS(rfFitLongitude, file="rfLongitude.rds")
 
 # SVM
-system.time(svmFitLongitude <- train(LONGITUDE~., data=dfTraining,
+system.time(svmFitLongitude <- train(LONGITUDE~., data=dfTrainingdfTraining[ ,which(names(dfTraining) %in% c("LONGITUDE","LATITUDE","BUILDINGID","FLOOR","HIGHESTSIGNAL","LOWESTSIGNAL","NUMBERCONNECTION"))],
                                      method='svmLinear',
                                      trControl = ctrl)) 
 
@@ -288,20 +313,26 @@ postResample(svmvalidLongitude, dfValid$LONGITUDE)
 # Save Model
 saveRDS(svmFitLongitude, file="svmLongitude.rds")
 
-# KNN
 
-# Check results on test dataset 100 % KAPPA 1
-set.seed(123)
-system.time(knnFitLongitudeTest <- knn(train = dfTraining, 
-                                       test = dfTest,
-                                       cl = dfTraining$LONGITUDE, k=5))
-postResample(knnFitLongitudeTest,dfTest$LONGITUDE)
+# pLOTTING THE ERRORS FOR LONGITUDE Random Forest
 
-# Check results on validation dataset  99 % KAPPA 0.9987  
-system.time(knnFitLongitudeValid <- knn(train = dfTraining, 
-                                        test = dfValidation,
-                                        cl = dfTraining$LONGITUDE, k=5))
-postResample(knnFitLongitudeValid,dfTest$LONGITUDE)
+plot_ly(dfTest, x = ~dfTest$LONGITUDE, y = ~rfTestLongitude,
+        type = "scatter",
+        color = ~dfTest$BUILDINGID, 
+        colors = c('blue', 'pink','green')) %>%
+   layout(title = "Errors in Longitude for the Test set Random Forest")
+         
 
+# 
+# g3 <- plot_ly(DF, x = ~DF_test$LONGITUDE, y = ~pred.lon_test$predictions, 
+#               color = ~DF_test$BUILDINGID, 
+#               colors = c('black', 'red','green')) %>% 
+#   add_markers() %>% 
+#   layout(title = "Errors in Longitude for the Test set",
+#          scene = list(
+#            xaxis = list(title = "Real Longitude"),
+#            yaxis = list(title = "Predicted Longitude")
+#          ))
+# g3 
 #PIPELINE FOR THE BLIND DATASET--------------------------------------------------------------------
 
