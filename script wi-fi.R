@@ -3,13 +3,14 @@
 # Objective: Predict location (building no, floor, latitude and longitude) of a person based on the connection and
 # strength of the signal of the connection to the WASPS.
 # LIBRARIES ----
+setwd("~/Wi Fi Location")
 if ("pacman" %in% rownames(installed.packages()) == FALSE) {
   install.packages("pacman")
 } else{
   library(pacman)
   rm(list = ls(all = TRUE))
   p_unload(pacman::p_loaded(), character.only = TRUE)
-  pacman::p_load(caret,ggplot2,dplyr,lubridate, plotly,readr,rgl,rpart,class,randomForest)
+  pacman::p_load(caret,ggplot2,dplyr,lubridate, plotly,readr,rgl,rpart,class,randomForest, doParallel)
 }
 
 # LOADING DATASETS----
@@ -184,243 +185,290 @@ dfTest <- dfLeftoverTraining[indicesTest, ] # Test Test 20 % of total
 dfValidation <-
   dfLeftoverTraining[-indicesTest, ] # Validation Test 20 % Total
 
-# MODELS FOR BUILDING ----
+# STANDARDIZING DATA FOR DISTANCE BASED MODELS ----
+# Saving the waps in a vector
+WAPs<-grep("WAP", names(locationData), value=T)
+
+# calculate the pre-process parameters from the dataset
+preprocessParams <- preProcess(locationData[WAPs], method=c("center", "scale"))
+
+# transform the waps using the parameters
+stand_waps <- predict(preprocessParams, locationData[WAPs])
+
+# complete dataset
+stand_dataset <- cbind(stand_waps, BUILDINGID=locationData$BUILDINGID, LONGITUDE=locationData$LONGITUDE, LATITUDE = locationData$LATITUDE,
+                       HIGHESTSIGNAL = locationData$HIGHESTSIGNAL, FLOOR = locationData$FLOOR, LOWESTSIGNAL = locationData$LOWESTSIGNAL, NUMBERCONNECTIONS = locationData$NUMBERCONNECTIONS) 
+
+# DATA SPLIT STANDARDIZED DATA ----
+indicesTrainingS <-
+  createDataPartition(stand_dataset$BUILDINGID, p = 0.6, list = FALSE)
+dfTrainingStand <-
+  stand_dataset[indicesTrainingS, ] # Training Test 60 %
+dfLeftoverTrainingS <-
+  stand_dataset[-indicesTrainingS, ]
+indicesTestS <-
+  createDataPartition(dfLeftoverTrainingS$BUILDINGID, p = 0.5, list = FALSE)
+dfTestStand <- dfLeftoverTrainingS[indicesTestS, ] # Test Test 20 % of total
+dfValidationStand <-
+  dfLeftoverTrainingS[-indicesTestS, ] # Validation Test 20 % Total
+
+
+# A. MODELS FOR BUILDING ----
 set.seed(123)
-# 1. KNN # 100% ON TEST and VALID , kappa 1 and Time is Bearable ~ 1 minute
+
+# 1. KNN BUILDING ----
 # We will remove the floor, lat and long from the training as they will be unknown for the actual data
 # Check results on test dataset
-system.time(knnFitTest <- knn(train = dfTraining[ , -which(names(dfTraining) %in% c("LONGITUDE","LATITUDE","FLOOR"))], 
-                              test = dfTest[ , -which(names(dfTest) %in% c("LONGITUDE","LATITUDE","FLOOR"))],
-                              cl = dfTraining$BUILDINGID, k=3
+
+system.time(knnFitTest <- knn(train = dfTrainingStand[ , -which(names(dfTrainingStand) %in% c("LONGITUDE","LATITUDE","FLOOR"))], 
+                              test = dfTestStand[ , -which(names(dfTestStand) %in% c("LONGITUDE","LATITUDE","FLOOR"))],
+                              cl = dfTrainingStand$BUILDINGID, k=3
 )
 )
 # user  system elapsed 
 # 86.42    0.16   90.21 
-print(knnCMT <- confusionMatrix(knnFitTest, dfTest$BUILDINGID)) # Confusion Matrix
+print(knnCMT <- confusionMatrix(knnFitTest, dfTestStand$BUILDINGID)) # Confusion Matrix
 
 # Check results on validation dataset
-knnFitValid <- knn(train=dfTraining[, -which(names(dfTraining) %in% c("LONGITUDE","LATITUDE","FLOOR"))], 
-                   test=dfValidation[ , -which(names(dfValidation) %in% c("LONGITUDE","LATITUDE","FLOOR"))],
-                   cl=dfTraining$BUILDINGID, k=3)
-print(knnCMV <- confusionMatrix(knnFitValid, dfValidation$BUILDINGID)) # Confusion Matrix
+knnFitValid <- knn(train=dfTrainingStand[, -which(names(dfTrainingStand) %in% c("LONGITUDE","LATITUDE","FLOOR"))], 
+                   test=dfValidationStand[ , -which(names(dfValidationStand) %in% c("LONGITUDE","LATITUDE","FLOOR"))],
+                   cl=dfTrainingStand$BUILDINGID, k=3)
+print(knnCMV <- confusionMatrix(knnFitValid, dfValidationStand$BUILDINGID)) # Confusion Matrix
 
 # Optimize KNN --- ACC AND KAPPA GO DOWN AFTER K=3 BOTH IN TEST AND VALID
 # Decided to keep the nr of neighbours 3 # used this function for the other knn models too
 i=1
 k.optm=1
 for (i in 1:9){
-  knn.mod <- knn(train = dfTraining[, -which(names(dfTraining) %in% c("LONGITUDE","LATITUDE","FLOOR"))], 
-                 test = dfValidation[, -which(names(dfValidation) %in% c("LONGITUDE","LATITUDE","FLOOR"))],
-                 cl = dfTraining$BUILDINGID, k=i)
-  k.optm[i] <- 100 * sum(dfValidation$BUILDINGID ==  knn.mod)/NROW(dfValidation$BUILDINGID)
+  knn.mod <- knn(train = dfTrainingStand[, -which(names(dfTrainingStand) %in% c("LONGITUDE","LATITUDE","FLOOR"))], 
+                 test = dfValidationStand[, -which(names(dfValidationStand) %in% c("LONGITUDE","LATITUDE","FLOOR"))],
+                 cl = dfTrainingStand$BUILDINGID, k=i)
+  k.optm[i] <- 100 * sum(dfValidationStand$BUILDINGID ==  knn.mod)/NROW(dfValidationStand$BUILDINGID)
   k=i
   cat(k,"=",k.optm[i],"
       ")
 }
 
-# 2. SVM # 100 % faster than KNN
+# 2. SVM BUILDING (CHOSEN) ----
 set.seed(123)
 ctrl <- trainControl(method = "cv", number = 10)
 system.time(svmFit <- train(BUILDINGID ~ ., 
-                            data=dfTraining[, -which(names(dfTraining) %in% c("LONGITUDE","LATITUDE","FLOOR"))],
-                            method="svmLinear",
+                            data = dfTrainingStand[, -which(names(dfTrainingStand) %in% c("LONGITUDE","LATITUDE","FLOOR"))],
+                            method ="svmLinear",
                             trControl = ctrl
 )
 ) 
 # user  system elapsed 
 # 16.07    1.16   17.98 
 # Check results on validation dataset # 99 % acc  kappa 0.9897  
-svmTest <- predict(svmFit ,newdata = dfTest[, -which(names(dfTraining) %in% c("LONGITUDE","LATITUDE","FLOOR"))])
-print(svmCMT <- confusionMatrix(svmTest, dfTest$BUILDINGID)) # Confusion Matrix
+svmTest <- predict(svmFit ,newdata = dfTestStand[, -which(names(dfTestStand) %in% c("LONGITUDE","LATITUDE","FLOOR"))])
+print(svmCMT <- confusionMatrix(svmTest, dfTestStand$BUILDINGID)) # Confusion Matrix
 
 # Check results on validation dataset # 99 % acc kappa 0.9897 
-svmValid <- predict(svmFit, newdata = dfValidation[, -which(names(dfTraining) %in% c("LONGITUDE","LATITUDE","FLOOR"))])
-print(svmCMV <- confusionMatrix(svmValid, dfValidation$BUILDINGID)) # Confusion Matrix
+svmValid <- predict(svmFit, newdata = dfValidationStand[, -which(names(dfTrainingStand) %in% c("LONGITUDE","LATITUDE","FLOOR"))])
+print(svmCMV <- confusionMatrix(svmValid, dfValidationStand$BUILDINGID)) # Confusion Matrix
 
 # Saving Model
 saveRDS(svmFit, file = "svmBuilding.rds")
 
-# MODELS FOR FLOOR ----
-# 1. KNN # 100 on test 99 on valid beareable time 
+# B. MODELS FOR FLOOR ----
+
+# 1. KNN FLOOR ---- 
 # We will remove the lat and long from the training as they will be unknown for the actual data 
 # On the blind dataset the building will be added from the previous prediction that has close to 100 % ACC 
 
 # Check results on test dataset Accuracy : 0.9951 ,  Kappa : 0.9936  
 set.seed(123)
-system.time(knnFitFloorTest <- knn(train = dfTraining[ , -which(names(dfTraining) %in% c("LONGITUDE","LATITUDE"))], 
-                                   test = dfTest[ , -which(names(dfTest) %in% c("LONGITUDE","LATITUDE"))],
-                                   cl = dfTraining$FLOOR, k=5
+system.time(knnFitFloorTest <- knn(train = dfTrainingStand[ , -which(names(dfTrainingStand) %in% c("LONGITUDE","LATITUDE"))], 
+                                   test  = dfTestStand[ , -which(names(dfTestStand) %in% c("LONGITUDE","LATITUDE"))],
+                                   cl    = dfTrainingStand$FLOOR, k=5
 )
 )
 # user  system elapsed 
 # 86.35    0.16   89.20 
-print(knnCMTFloor <- confusionMatrix(knnFitFloorTest, dfTest$FLOOR)) # Confusion Matrix
+print(knnCMTFloor <- confusionMatrix(knnFitFloorTest, dfTestStand$FLOOR)) # Confusion Matrix
 
 # Check results on validation dataset   Accuracy : 0.9934 , Kappa : 0.9913    
-system.time(knnFitFloorValid <- knn(train = dfTraining[ , -which(names(dfTraining) %in% c("LONGITUDE","LATITUDE"))], 
-                                    test = dfValidation[ , -which(names(dfValidation) %in% c("LONGITUDE","LATITUDE"))],
-                                    cl = dfTraining$FLOOR, k=5
+system.time(knnFitFloorValid <- knn(train = dfTrainingStand[ , -which(names(dfTrainingStand) %in% c("LONGITUDE","LATITUDE"))], 
+                                    test  = dfValidationStand[ , -which(names(dfValidationStand) %in% c("LONGITUDE","LATITUDE"))],
+                                    cl    = dfTrainingStand$FLOOR, k=5
 )
 )
 # user  system elapsed 
 # 82.61    0.14   83.77 
-print(knnCMVFloor <- confusionMatrix(knnFitFloorValid, dfValidation$FLOOR)) # Confusion Matrix
+print(knnCMVFloor <- confusionMatrix(knnFitFloorValid, dfValidationStand$FLOOR)) # Confusion Matrix
 
-# 2. SVM #Longer than KNN
+# 2. SVM FLOOR (CHOSEN) ----
 set.seed(123)
-system.time(svmFitFloor <- train(FLOOR~., 
-                                 data=dfTraining[, -which(names(dfTraining) %in% c("LONGITUDE","LATITUDE"))],
-                                 method="svmLinear",
+system.time(svmFitFloor <- train(FLOOR ~ ., 
+                                 data      = dfTrainingStand[, -which(names(dfTrainingStand) %in% c("LONGITUDE","LATITUDE"))],
+                                 method    = "svmLinear",
                                  trControl = ctrl
 )
 )
 # user  system elapsed 
 # 33.89    2.20   37.53 
 
-# Check results on test dataset  Accuracy : 0.9872  ,   Kappa : 0.986   
-svmTestFloor <- predict(svmFitFloor, newdata = dfTest[, -which(names(dfTest) %in% c("LONGITUDE","LATITUDE"))])
-print(svmCMTFloor <- confusionMatrix(svmTestFloor , dfTest$FLOOR)) # Confusion Matrix
+# Check results on test dataset  Accuracy : 0.9932   ,   Kappa : 0.9926 
+svmTestFloor <- predict(svmFitFloor, newdata = dfTestStand[, -which(names(dfTestStand) %in% c("LONGITUDE","LATITUDE"))])
+print(svmCMTFloor <- confusionMatrix(svmTestFloor , dfTestStand$FLOOR)) # Confusion Matrix
 
-# Check results on validation dataset Accuracy : 0.9855   , Kappa : 0.9841 
-svmValidFloor <- predict(svmFitFloor ,newdata = dfValidation[, -which(names(dfValidation) %in% c("LONGITUDE","LATITUDE"))])
-print(svmCMVFloor <- confusionMatrix(svmValidFloor, dfValidation$FLOOR)) # Confusion Matrix
+# Check results on validation dataset Accuracy : 0.9932   ,Kappa : 0.9926   
+svmValidFloor <- predict(svmFitFloor ,newdata = dfValidationStand[, -which(names(dfValidationStand) %in% c("LONGITUDE","LATITUDE"))])
+print(svmCMVFloor <- confusionMatrix(svmValidFloor, dfValidationStand$FLOOR)) # Confusion Matrix
 
 # Save Model
 saveRDS(svmFitFloor, file="svmFloor.rds")
 
-# MODELS FOR LATITUDE ----
+# C. MODELS FOR LATITUDE ----
 # When using on the unseen data we will add the building and floor from previous pred and use them too
 # for predicting the latitude 
 set.seed(123)
-ctrlRegression <- trainControl(method = "repeatedcv",
-                               number = 10,
-                               repeats = 3
+ctrlRegression <- trainControl(method        = "repeatedcv",
+                               number        = 10,
+                               repeats       = 3,
+                               allowParallel = TRUE
 )
 
-# RANDOM FOREST (CHOSEN)
+# 1. RANDOM FOREST LATITUDE (CHOSEN) ----
+
+bestmtry_rf <- tuneRF(dfTraining[, -which(names(dfTraining) %in% c("LONGITUDE"))],
+                      dfTraining$LATITUDE[, -which(names(dfTraining) %in% c("LONGITUDE"))],
+                      ntreeTry=100,
+                      stepFactor=2,
+                      improve=0.05,
+                      trace=TRUE, 
+                      plot=T)
+
 system.time(rfFitLatitude <- randomForest(x = dfTraining[, -which(names(dfTraining) %in% c("LONGITUDE"))],
                                           y = dfTraining$LATITUDE, 
-                                          ntrees = 1000,
+                                          ntrees = 100,
                                           importance = T,
-                                          mtry=16
+                                          mtry = 88
 )
 )
 # user  system elapsed 
 # 752.86    1.36  771.61 
 
 # Predict and evaluate on Test
-rfTestLatitude <- predict(rfFitLatitude, dfTest)
+rfTestLatitude <- predict(rfFitLatitude, dfTest[, -which(names(dfTest) %in% c("LONGITUDE"))])
 print(postResample_rfTestLatitude <- postResample(rfTestLatitude, dfTest$LATITUDE))
 
 # RMSE  Rsquared       MAE 
-# 4.8442056 0.9951363 3.4163620 
+# 4.7367708 0.9952838 3.4319043 
 
 # Predict and evaluate on Validation
-rfValidLatitude <- predict(rfFitLatitude, dfValidation)
+rfValidLatitude <- predict(rfFitLatitude, dfValidation[, -which(names(dfValidation) %in% c("LONGITUDE"))])
 print(postResample_rfValidLatitude <- postResample(rfValidLatitude, dfValidation$LATITUDE))
 
 # RMSE Rsquared      MAE 
 # 4.816284 0.995293 3.384434 
 
 # Save absolute errors
-errors_latitude_rf <- cbind((as.data.frame(dfTest$LATITUDE - rfTestLatitude)),(as.data.frame(dfValidation$LATITUDE - rfValidLatitude)))
+errors_latitude_rfTest <- as.data.frame(dfTest$LATITUDE - rfTestLatitude)
+errors_latitude_rfValid <- as.data.frame(dfValidation$LATITUDE - rfValidLatitude)
 
 # Save Model
 saveRDS(rfFitLatitude, file = "rfLatitude.rds")
 
-# SVM
-set.seed(123)
-system.time(svmFitLatitude <- train(LATITUDE ~ .,
-                                    data = dfTraining[,- which(names(dfTraining) %in% c("LONGITUDE"))],
-                                    method ="svmLinear",
-                                    trControl = ctrlRegression
-) 
+# 2. KNN LATITUDE ----
+system.time(knnFitLatitude <- knnreg(LATITUDE~.,
+                                     data = dfTrainingStand[, -which(names(dfTrainingStand) %in% c("LONGITUDE"))])
 )
 
-# user  system elapsed 
-# 103.47    0.49  106.09 
+# Check results on test dataset  
+knnTestLatitude <- predict(knnFitLatitude, dfTestStand[, -which(names(dfTestStand) %in% c("LONGITUDE"))])
+print(postResample_knnTestLatitude <- postResample(knnTestLatitude,dfTestStand$LATITUDE))
+# RMSE  Rsquared       MAE 
+# 4.8241212 0.9949119 2.4292495 
+# Check results on validation dataset        
+knnValidLatitude <- predict(knnFitLatitude, dfValidationStand[, -which(names(dfValidationStand) %in% c("LONGITUDE"))])
+print(postResample_knnValidLatitude <- (postResample(knnValidLatitude ,dfValidationStand$LATITUDE)))
+# RMSE  Rsquared       MAE 
+# 4.8166024 0.9951082 2.4278773 
 
-# Check results on Test dataset  
-svmTestLatItude <- predict(svmFitLatitude, newdata = dfTest[, -which(names(dfTraining) %in% c("LONGITUDE"))])
-postResample(svmTestLatItude, dfTest$LATITUDE)
+# Save absolute errors
+errors_latitude_knnTest <- as.data.frame(dfTestStand$LATITUDE - knnTestLatitude)
+errors_latitude_knnValid <- as.data.frame(dfValidationStand$LATITUDE - knnValidLatitude)
 
-# RMSE   Rsquared        MAE 
-# 32.2325515  0.7783443 26.3834116 
 
-# Check results on validation dataset 
-svmValidLatitude <- predict(svmFitLatitude, newdata = dfValidation[, -which(names(dfTraining) %in% c("LONGITUDE"))])
-postResample(svmValidLatitude, dfValidation$LATITUDE)
-
-# RMSE   Rsquared        MAE 
-# 32.1597242  0.7829318 26.2658431 
-
-# Save Model
-saveRDS(svmFitLatitude, file = "svmLatitude.rds")
-
-# MODELS FOR LONGITUDE ----
+# D. MODELS FOR LONGITUDE ----
 # THESE MODELS HAVE VERY GOOD PERFORMANCE WHEN USING THE REAL VERIFIED DATA BUT ONCE WE ADD THE PREDICTED VALUES + ERRORS
 # THE PERFORMANCE WILL NOT BE AS GOOD
 set.seed(123)
-# RANDOM FOREST
-system.time(rfFitLongitude <- randomForest(x = dfTraining[ ,-which(names(dfTraining) %in% c("LATITUDE"))],
+# 1. RANDOM FOREST LONGITUDE (CHOSEN)----
+
+bestmtry_rf <- tuneRF(dfTraining, dfTraining$LONGITUDE, ntreeTry=100,stepFactor=2,improve=0.05,trace=TRUE, plot=T)
+
+# mtry OOBError
+# 88    88 5.536374
+# 175  175 5.743512
+# 350  350 7.065408
+
+system.time(rfFitLongitude <- randomForest(x = dfTraining,
                                            y = dfTraining$LONGITUDE, 
-                                           ntrees = 500,
+                                           ntrees = 100,
                                            importance = T,
-                                           mtry = 16
+                                           mtry = 88
 )
 )
 
 # user  system elapsed 
-# 192.12    0.70  212.90
+# 684.86    1.73  711.69 
 
 # Predict and evaluate on Test
 rfTestLongitude <- predict(rfFitLongitude, dfTest)
 print(postResample_rfTestLongitude <- postResample(rfTestLongitude, dfTest$LONGITUDE))
-# RMSE Rsquared      MAE 
-# 8.306966 0.995620 1.992130 
+# RMSE  Rsquared       MAE 
+# 5.6731365 0.9979381 4.2060890 
 
 # Predict and evaluate on Validation
 rfValidLongitude <- predict(rfFitLongitude, dfValidation)
 print(postResample_rfValidLongitude <- postResample(rfValidLongitude, dfValidation$LONGITUDE))
 # RMSE  Rsquared       MAE 
-# 7.4855428 0.9964204 1.8185214
+# 5.7217219 0.9978971 4.2060182 
 
 # Save absolute errors
-errors_latitude_rf <- cbind((as.data.frame(dfTest$LONGITUDE - rfTestLongitude)), (as.data.frame(dfValidation$LONGITUDE - rfValidLongitude)))
+errors_longitude_rfTest <- as.data.frame(dfTest$LONGITUDE - rfTestLongitude)
+errors_longitude_rfValid <- as.data.frame(dfValidation$LONGITUDE - rfValidLongitude)
 
 # Save Model
 saveRDS(rfFitLongitude, file = "rfLongitude.rds")
 
-# SVM
-system.time(svmFitLongitude <- train(LONGITUDE~.,
-                                     data = dfTraining[, which(names(dfTraining) %in% c("LONGITUDE","LATITUDE","BUILDINGID","FLOOR","HIGHESTSIGNAL","LOWESTSIGNAL","NUMBERCONNECTION"))],
-                                     method = "svmLinear",
-                                     trControl = ctrlRegression
+# 2. KNN LONGITUDE  ----
+system.time(knnFitLongitude <- knnreg(LONGITUDE~.,
+                                      data = dfTrainingStand)
 )
-) 
-# user  system elapsed 
-# 133.39    0.45  134.10 
 
-# Check results on validation dataset  
-svmTestLongitude <- predict(svmFitLongitude, newdata = dfTest)
-postResample(svmTestLongitude, dfTest$LONGITUDE)
-# RMSE   Rsquared        MAE 
-# 33.4489216  0.9289858 27.3299243 
+# Check results on test dataset  
+knnTestLongitude <- predict(knnFitLongitude, dfTestStand)
+print(postResample_knnTestLongitude <- postResample(knnTestLongitude,dfTestStand$LONGITUDE))
+# RMSE  Rsquared       MAE 
+# 3.9097830 0.9990115 1.6463896 
+# Check results on validation dataset        
+knnValidLongitude <- predict(knnFitLongitude, dfValidationStand)
+print(postResample_knnValidLongitude <- postResample(knnValidLongitude ,dfValidationStand$LONGITUDE))
+# RMSE  Rsquared       MAE 
+# 3.8767402 0.9990243 1.6713021
 
-# Check results on validation dataset # 99 % acc kappa 0.9897 
-svmValidLongitude <- predict(svmFitLongitude ,newdata = dfValidation)
-postResample(svmValidLongitude, dfValidation$LONGITUDE)
-# RMSE   Rsquared        MAE 
-# 33.9755611  0.9262403 27.8674068
-# Save Model
-saveRDS(svmFitLongitude, file = "svmLongitude.rds")
+# Save absolute errors
+errors_longitude_knnTest <- as.data.frame(dfTestStand$LONGITUDE - knnTestLongitude)
+errors_longitude_knnValid <- as.data.frame(dfValidationStand$LONGITUDE - knnValidLongitude)
 
+# ERROR ANALYSIS ----      
 # pLOTTING THE ERRORS FOR LONGITUDE Random Forest
-plot_ly(dfTest, x = ~dfTest$LONGITUDE, y = ~rfTestLongitude,
+plot_ly(dfTest, x = ~dfTestStand$LONGITUDE, y = ~knnTestLongitude,
         type   = "scatter",
-        color  = ~ dfTest$BUILDINGID, 
+        color  = ~ dfTestStand$BUILDINGID, 
         colors = c("blue", "pink","green")) %>%
   layout(title = "Errors in Longitude for the Test set Random Forest")
+# Longitude errors distribution
+hist(errors_longitude_rfTest$`dfTest$LONGITUDE - rfTestLongitude`) # RF
+hist(errors_longitude_knnTest$`dfTestStand$LONGITUDE - knnTestLongitude`) #KNN
+
+# Latitude Errors distribution
+hist(errors_latitude_rfTest$`dfTest$LATITUDE - rfTestLatitude`) # RF
+hist(errors_latitude_knnTest$`dfTestStand$LATITUDE - knnTestLatitude`) #KNN
 
 #PIPELINE FOR THE BLIND DATASET ----
 
