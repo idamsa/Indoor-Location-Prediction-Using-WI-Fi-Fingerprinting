@@ -10,7 +10,7 @@ if ("pacman" %in% rownames(installed.packages()) == FALSE) {
   library(pacman)
   rm(list = ls(all = TRUE))
   p_unload(pacman::p_loaded(), character.only = TRUE)
-  pacman::p_load(caret,ggplot2,dplyr,lubridate, plotly,readr,rgl,rpart,class,randomForest, doParallel)
+  pacman::p_load(caret,ggplot2,dplyr,lubridate, plotly,readr,rgl,rpart,class,randomForest, kernlab, e1071)
 }
 
 # LOADING DATASETS----
@@ -157,14 +157,15 @@ locationData[, WAPS] <-
   locationData[, WAPS] + 105 # flips all waps to positive values
 
 # Filter WAPS that have all 0 signal for the full row and remove them (it means that no user connected to this wap)
-locationData <- filter(locationData[which(rowSums(locationData[,WAPS])!=0),]) 
+# and the ones with near zero variance
+locationData <- filter(locationData[which(rowSums(locationData[,WAPS])!=0),])  
 
 # Add features highest, lowest  signal column and number of waps connected to
-locationData$HIGHESTSIGNAL <- apply(locationData[, 1:521], 1, function(x)
+locationData$HIGHESTSIGNAL <- apply(locationData[, 1:465], 1, function(x)
   max(x))
-locationData$LOWESTSIGNAL <- apply(locationData[, 1:521], 1, function(x)
+locationData$LOWESTSIGNAL <- apply(locationData[, 1:465], 1, function(x)
   min(x[x > 0]))
-locationData$NUMBERCONNECTIONS <- apply(locationData[, 1:521], 1, function(x)
+locationData$NUMBERCONNECTIONS <- apply(locationData[, 1:465], 1, function(x)
   sum(x > 0))
 
 # Drop the unnecessary columns and df to clean the enviroment
@@ -199,6 +200,8 @@ stand_waps <- predict(preprocessParams, locationData[WAPs])
 stand_dataset <- cbind(stand_waps, BUILDINGID=locationData$BUILDINGID, LONGITUDE=locationData$LONGITUDE, LATITUDE = locationData$LATITUDE,
                        HIGHESTSIGNAL = locationData$HIGHESTSIGNAL, FLOOR = locationData$FLOOR, LOWESTSIGNAL = locationData$LOWESTSIGNAL, NUMBERCONNECTIONS = locationData$NUMBERCONNECTIONS) 
 
+stand_dataset <- filter(stand_dataset[ - which(apply(stand_dataset[WAPs], 2, var) == 0)])
+
 # DATA SPLIT STANDARDIZED DATA ----
 indicesTrainingS <-
   createDataPartition(stand_dataset$BUILDINGID, p = 0.6, list = FALSE)
@@ -222,7 +225,7 @@ set.seed(123)
 
 system.time(knnFitTest <- knn(train = dfTrainingStand[ , -which(names(dfTrainingStand) %in% c("LONGITUDE","LATITUDE","FLOOR"))], 
                               test = dfTestStand[ , -which(names(dfTestStand) %in% c("LONGITUDE","LATITUDE","FLOOR"))],
-                              cl = dfTrainingStand$BUILDINGID, k=3
+                              cl = dfTrainingStand$BUILDINGID, k=2
 )
 )
 # user  system elapsed 
@@ -232,11 +235,11 @@ print(knnCMT <- confusionMatrix(knnFitTest, dfTestStand$BUILDINGID)) # Confusion
 # Check results on validation dataset
 knnFitValid <- knn(train=dfTrainingStand[, -which(names(dfTrainingStand) %in% c("LONGITUDE","LATITUDE","FLOOR"))], 
                    test=dfValidationStand[ , -which(names(dfValidationStand) %in% c("LONGITUDE","LATITUDE","FLOOR"))],
-                   cl=dfTrainingStand$BUILDINGID, k=3)
+                   cl=dfTrainingStand$BUILDINGID, k=2)
 print(knnCMV <- confusionMatrix(knnFitValid, dfValidationStand$BUILDINGID)) # Confusion Matrix
 
 # Optimize KNN --- ACC AND KAPPA GO DOWN AFTER K=3 BOTH IN TEST AND VALID
-# Decided to keep the nr of neighbours 3 # used this function for the other knn models too
+# Decided to keep the nr of neighbours 2 # used this function for the other knn models too
 i=1
 k.optm=1
 for (i in 1:9){
@@ -331,45 +334,49 @@ ctrlRegression <- trainControl(method        = "repeatedcv",
 )
 
 # 1. RANDOM FOREST LATITUDE (CHOSEN) ----
-
-bestmtry_rf <- tuneRF(dfTraining[, -which(names(dfTraining) %in% c("LONGITUDE"))],
-                      dfTraining$LATITUDE[, -which(names(dfTraining) %in% c("LONGITUDE"))],
-                      ntreeTry=100,
-                      stepFactor=2,
-                      improve=0.05,
-                      trace=TRUE, 
-                      plot=T)
-
-system.time(rfFitLatitude <- randomForest(x = dfTraining[, -which(names(dfTraining) %in% c("LONGITUDE"))],
-                                          y = dfTraining$LATITUDE, 
-                                          ntrees = 100,
-                                          importance = T,
-                                          mtry = 88
-)
-)
+# 
+# # bestmtry_rf <- tuneRF(dfTraining[, -which(names(dfTraining) %in% c("LONGITUDE"))],
+#                       dfTraining$LATITUDE[, -which(names(dfTraining) %in% c("LONGITUDE"))],
+#                       ntreeTry=100,
+#                       stepFactor=2,
+#                       improve=0.05,
+#                       trace=TRUE, 
+#                       plot=T)
+# 
+# #system.time(rfFitLatitude <- randomForest(x = dfTraining[, -which(names(dfTraining) %in% c("LONGITUDE"))],
+#                                           y = dfTraining$LATITUDE, 
+#                                           ntrees = 100,
+#                                           importance = T,
+#                                           mtry = 88
+# #)
+# )
 # user  system elapsed 
 # 752.86    1.36  771.61 
+
+# Bring model 
+
+rfFitLatitude <- readRDS("rfLatitudeFinal.rds")
 
 # Predict and evaluate on Test
 rfTestLatitude <- predict(rfFitLatitude, dfTest[, -which(names(dfTest) %in% c("LONGITUDE"))])
 print(postResample_rfTestLatitude <- postResample(rfTestLatitude, dfTest$LATITUDE))
 
 # RMSE  Rsquared       MAE 
-# 4.7367708 0.9952838 3.4319043 
+# 4.2609324 0.9962189 3.0925014 
 
 # Predict and evaluate on Validation
 rfValidLatitude <- predict(rfFitLatitude, dfValidation[, -which(names(dfValidation) %in% c("LONGITUDE"))])
 print(postResample_rfValidLatitude <- postResample(rfValidLatitude, dfValidation$LATITUDE))
 
-# RMSE Rsquared      MAE 
-# 4.816284 0.995293 3.384434 
+# RMSE  Rsquared       MAE 
+# 4.3369444 0.9959796 3.1199783 
 
 # Save absolute errors
 errors_latitude_rfTest <- as.data.frame(dfTest$LATITUDE - rfTestLatitude)
 errors_latitude_rfValid <- as.data.frame(dfValidation$LATITUDE - rfValidLatitude)
 
 # Save Model
-saveRDS(rfFitLatitude, file = "rfLatitude.rds")
+# saveRDS(rfFitLatitude, file = "rfLatitude.rds")
 
 # 2. KNN LATITUDE ----
 system.time(knnFitLatitude <- knnreg(LATITUDE~.,
@@ -380,12 +387,13 @@ system.time(knnFitLatitude <- knnreg(LATITUDE~.,
 knnTestLatitude <- predict(knnFitLatitude, dfTestStand[, -which(names(dfTestStand) %in% c("LONGITUDE"))])
 print(postResample_knnTestLatitude <- postResample(knnTestLatitude,dfTestStand$LATITUDE))
 # RMSE  Rsquared       MAE 
-# 4.8241212 0.9949119 2.4292495 
+# 4.5850294 0.9953791 2.3328006 
+
 # Check results on validation dataset        
 knnValidLatitude <- predict(knnFitLatitude, dfValidationStand[, -which(names(dfValidationStand) %in% c("LONGITUDE"))])
 print(postResample_knnValidLatitude <- (postResample(knnValidLatitude ,dfValidationStand$LATITUDE)))
 # RMSE  Rsquared       MAE 
-# 4.8166024 0.9951082 2.4278773 
+# 5.1371152 0.9942487 2.4594966 
 
 # Save absolute errors
 errors_latitude_knnTest <- as.data.frame(dfTestStand$LATITUDE - knnTestLatitude)
@@ -398,35 +406,39 @@ errors_latitude_knnValid <- as.data.frame(dfValidationStand$LATITUDE - knnValidL
 set.seed(123)
 # 1. RANDOM FOREST LONGITUDE (CHOSEN)----
 
-bestmtry_rf <- tuneRF(dfTraining, dfTraining$LONGITUDE, ntreeTry=100,stepFactor=2,improve=0.05,trace=TRUE, plot=T)
-
-# mtry OOBError
-# 88    88 5.536374
-# 175  175 5.743512
-# 350  350 7.065408
-
-system.time(rfFitLongitude <- randomForest(x = dfTraining,
-                                           y = dfTraining$LONGITUDE, 
-                                           ntrees = 100,
-                                           importance = T,
-                                           mtry = 88
-)
-)
+# bestmtry_rf <- tuneRF(dfTraining, dfTraining$LONGITUDE, ntreeTry=100,stepFactor=2,improve=0.05,trace=TRUE, plot=T)
+# 
+# # mtry OOBError
+# # 88    88 5.536374
+# # 175  175 5.743512
+# # 350  350 7.065408
+# 
+# system.time(rfFitLongitude <- randomForest(x = dfTraining,
+#                                            y = dfTraining$LONGITUDE, 
+#                                            ntrees = 100,
+#                                            importance = T,
+#                                            mtry = 88
+# )
+# )
 
 # user  system elapsed 
 # 684.86    1.73  711.69 
+
+# Bring Model
+
+rfFitLongitude <- readRDS("rfLongitudeFinal.rds")
 
 # Predict and evaluate on Test
 rfTestLongitude <- predict(rfFitLongitude, dfTest)
 print(postResample_rfTestLongitude <- postResample(rfTestLongitude, dfTest$LONGITUDE))
 # RMSE  Rsquared       MAE 
-# 5.6731365 0.9979381 4.2060890 
+# 5.1949389 0.9982786 3.8511694
 
 # Predict and evaluate on Validation
 rfValidLongitude <- predict(rfFitLongitude, dfValidation)
 print(postResample_rfValidLongitude <- postResample(rfValidLongitude, dfValidation$LONGITUDE))
 # RMSE  Rsquared       MAE 
-# 5.7217219 0.9978971 4.2060182 
+# 5.0700276 0.9983662 3.7734408 
 
 # Save absolute errors
 errors_longitude_rfTest <- as.data.frame(dfTest$LONGITUDE - rfTestLongitude)
@@ -449,26 +461,98 @@ print(postResample_knnTestLongitude <- postResample(knnTestLongitude,dfTestStand
 knnValidLongitude <- predict(knnFitLongitude, dfValidationStand)
 print(postResample_knnValidLongitude <- postResample(knnValidLongitude ,dfValidationStand$LONGITUDE))
 # RMSE  Rsquared       MAE 
-# 3.8767402 0.9990243 1.6713021
+# 4.1370858 0.9988972 1.6966097 
 
 # Save absolute errors
 errors_longitude_knnTest <- as.data.frame(dfTestStand$LONGITUDE - knnTestLongitude)
 errors_longitude_knnValid <- as.data.frame(dfValidationStand$LONGITUDE - knnValidLongitude)
 
+# Save model
+saveRDS(knnFitLongitude, file = "knnLongitude.rds")
+
+
 # ERROR ANALYSIS ----      
-# pLOTTING THE ERRORS FOR LONGITUDE Random Forest
-plot_ly(dfTest, x = ~dfTestStand$LONGITUDE, y = ~knnTestLongitude,
+# pLOTTING THE ERRORS FOR LONGITUDE Random Forest 
+)
+plot_ly(dfTest, x = ~dfTest$LONGITUDE, y = ~rfTestLongitude,
         type   = "scatter",
-        color  = ~ dfTestStand$BUILDINGID, 
+        color  = ~ dfTest$BUILDINGID, 
         colors = c("blue", "pink","green")) %>%
   layout(title = "Errors in Longitude for the Test set Random Forest")
+
 # Longitude errors distribution
-hist(errors_longitude_rfTest$`dfTest$LONGITUDE - rfTestLongitude`) # RF
-hist(errors_longitude_knnTest$`dfTestStand$LONGITUDE - knnTestLongitude`) #KNN
+
+plot_ly(alpha = 0.6) %>%
+  add_histogram(x = errors_longitude_rfTest$`dfTest$LONGITUDE - rfTestLongitude`, name = "Random Forest Errors") %>%
+  add_histogram(x = errors_longitude_knnTest$`dfTestStand$LONGITUDE - knnTestLongitude`, name = "KNN Errors") %>%
+  layout(barmode = "overlay",
+         title = 'Model Error Distribution Longitude',
+         legend = list(x = 0.1, y = 0.9))
 
 # Latitude Errors distribution
-hist(errors_latitude_rfTest$`dfTest$LATITUDE - rfTestLatitude`) # RF
-hist(errors_latitude_knnTest$`dfTestStand$LATITUDE - knnTestLatitude`) #KNN
 
+plot_ly(alpha = 0.6) %>%
+add_histogram(x = errors_latitude_rfTest$`dfTest$LATITUDE - rfTestLatitude`, name = "Random Forest Errors") %>%
+  add_histogram(x = errors_latitude_knnTest$`dfTestStand$LATITUDE - knnTestLatitude`, name = "KNN Errors") %>%
+  layout(barmode = "overlay",
+         title = 'Model Error Distribution Latitude',
+         legend = list(x = 0.1, y = 0.9))
+
+# Plot test vs pred longitude latitude
+
+dfTest2 <- dfTest
+dfTest2 <- cbind(dfTest2,rfTestLongitude,rfTestLatitude)
+dfTest2 <- cbind(dfTest2, diffs$meh)
+diffs <- as.data.frame(cbind(dfTest$LONGITUDE,rfTestLongitude))
+diffs$same <- diffs$V1 - diffs$rfTestLongitude
+diffs$meh <- as.factor(ifelse((diffs$same < 5 & diffs$same > -5) ,"Error +/- 5 m Longitude","Error bigger than 5 m Longitude"))
+dfTest2 <- cbind(dfTest2, diffs$meh)
+p1 <- plot_ly(
+  dfTest2,
+  x = ~ rfTestLongitude,
+  y = ~ rfTestLatitude,
+  z = ~ FLOOR,
+  color = dfTest2$`diffs$meh`,
+  colors = c("red","blue")
+) %>%
+  add_markers() %>%
+  layout(
+    scene = list(
+      xaxis = list(title = "Longitude"),
+      yaxis = list(title = "Latitude"),
+      zaxis = list(title = "Floor")
+    ),
+
+    title = "3D plot of the buildings and floors"
+    
+  )
+
+p2 <- plot_ly(
+  dfTest2,
+  x = ~ LONGITUDE,
+  y = ~ LATITUDE,
+  z = ~ FLOOR,
+  name = "Real",
+  color = "purple"
+  ) %>%
+  add_markers() %>%
+  layout(
+    scene = list(
+      xaxis = list(title = "Longitude"),
+      yaxis = list(title = "Latitude"),
+      zaxis = list(title = "Floor")
+    ),
+    annotations = list(
+      x = 1,
+      y = 1,
+      text = "Real Test vs Predicted Test Latitude and Longitude",
+      showarrow = FALSE,
+      name = "aa"
+    ),
+    title = "3D plot of the buildings and floors"
+    
+  )
+
+subplot(p1,p2)
 #PIPELINE FOR THE BLIND DATASET ----
 
