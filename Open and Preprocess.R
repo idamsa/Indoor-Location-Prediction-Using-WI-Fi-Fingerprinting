@@ -4,7 +4,6 @@
 # strength of the signal of the connection to the WASPS.
 # LIBRARIES ----
 
-setwd("~/Wi Fi Location")
 if ("pacman" %in% rownames(installed.packages()) == FALSE) {
   install.packages("pacman")
 } else{
@@ -24,7 +23,6 @@ locationData <- rbind(trainingData, validationData) # Building the full Data set
 #INSPECTING, PREPROCESSING, VISUALIZATIONS ----
 
 # Transform Data Types 
-# locationData[1:520]<- sapply(locationData[1:520],as.numeric)
 locationData [, c("SPACEID","USERID","PHONEID","RELATIVEPOSITION", "BUILDINGID","FLOOR")] <- lapply(locationData [, c("SPACEID","USERID","PHONEID","RELATIVEPOSITION", "BUILDINGID","FLOOR")], factor) # to factors
 locationData$TIMESTAMP <- as.POSIXct(as.numeric(locationData$TIMESTAMP),origin  =  "1970-01-01",tz = "GMT")
 
