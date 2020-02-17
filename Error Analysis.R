@@ -1,9 +1,8 @@
 # ERROR ANALYSIS ----      
 # pLOTTING THE ERRORS FOR LONGITUDE Random Forest 
 
-plot_ly(dfTest, x = ~dfTest$LONGITUDE, y = ~rfTestLongitude,
+plot_ly(dfTest, x = ~dfValidation$LONGITUDE, y = ~rfValidLongitude,
         type   = "scatter",
-        color  = ~ dfTest$BUILDINGID, 
         colors = c("blue", "pink","green")) %>%
   layout(title = "Errors in Longitude for the Test set Random Forest")
 
@@ -29,11 +28,10 @@ plot_ly(alpha = 0.6) %>%
 
 dfTest2 <- dfTest
 dfTest2 <- cbind(dfTest2,rfTestLongitude,rfTestLatitude)
-dfTest2 <- cbind(dfTest2, diffs$meh)
+dfTest2 <- cbind(dfTest2, diffs$same)
 diffs <- as.data.frame(cbind(dfTest$LONGITUDE,rfTestLongitude))
 diffs$same <- diffs$V1 - diffs$rfTestLongitude
-diffs$meh <- as.factor(ifelse((diffs$same < 5 & diffs$same > -5) ,"Error +/- 5 m Longitude","Error bigger than 5 m Longitude"))
-dfTest2 <- cbind(dfTest2, diffs$meh)
+dfTest2 <- cbind(dfTest2, diffs$same)
 p1 <- plot_ly(
   dfTest2,
   x = ~ rfTestLongitude,
