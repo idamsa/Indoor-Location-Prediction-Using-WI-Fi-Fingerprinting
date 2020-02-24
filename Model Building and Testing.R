@@ -56,22 +56,28 @@ ggplot(res,aes(x=k,y=accuracy)) + geom_line(size=1,color="blue") +
 
 
 # 2. SVM BUILDING (CHOSEN) ----
-set.seed(123)
-ctrl <- trainControl(method = "cv", number = 10)
-system.time(svmFit <- train(BUILDINGID ~.,
-                            data = dfTrainingStand[, -which(names(dfTrainingStand) %in% c("LONGITUDE","LATITUDE","FLOOR"))],
-                            method = "svmLinear",
-                            trControl = ctrl,
-                            verbose = TRUE
-
-
-)
-)
-
-#### Ignacio: Check if the model exists, otherwise, load it from the folder.
+#### Ignacio: Check if the model exists, otherwise, search for it in the folder.
+#### If it exists, load it. Otherwise, generate the model.
 if (!exists("svmFit")) {
-  svmFit <- readRDS("svmBuildingFinal.rds")
+  if (file.exists("svmBuildingFinal.rds")) {
+    svmFit <- readRDS("svmBuildingFinal.rds")
+  }
+  else{
+    set.seed(123)
+    ctrl <- trainControl(method = "cv", number = 10)
+    system.time(svmFit <- train(BUILDINGID ~.,
+                                data = dfTrainingStand[, -which(names(dfTrainingStand) %in% c("LONGITUDE","LATITUDE","FLOOR"))],
+                                method = "svmLinear",
+                                trControl = ctrl,
+                                verbose = TRUE
+                                
+                                
+    )
+    )
+  }
 }
+
+
 
 # Check results on validation dataset # 99 % acc  kappa 0.9897  
 svmTest <- predict(svmFit ,newdata = dfTestStand[, -which(names(dfTestStand) %in% c("LONGITUDE","LATITUDE","FLOOR"))])
@@ -82,8 +88,10 @@ svmValid <- predict(svmFit, newdata = dfValidationStand[, -which(names(dfTrainin
 print(svmCMV <- confusionMatrix(svmValid, dfValidationStand$BUILDINGID)) # Confusion Matrix
 
 # Saving Model
-saveRDS(svmFit, file = "svmBuildingFinal.rds")
-
+if (!exists("svmBuildingFinal.rds")) {
+  saveRDS(svmFit, file = "svmBuildingFinal.rds")
+}
+  
 # B. MODELS FOR FLOOR ----
 
 # 1. KNN FLOOR ---- 
@@ -111,22 +119,22 @@ system.time(knnFitFloorValid <- knn(train = dfTrainingStand[ , -which(names(dfTr
 print(knnCMVFloor <- confusionMatrix(knnFitFloorValid, dfValidationStand$FLOOR)) # Confusion Matrix
 
 # 2. SVM FLOOR (CHOSEN) ----
-set.seed(123)
-system.time(svmFitFloor <- train(FLOOR ~ .,
-                                 data      = dfTrainingStand[, -which(names(dfTrainingStand) %in% c("LONGITUDE","LATITUDE"))],
-                                 method    = "svmLinear",
-                                 trControl = ctrl
-)
-)
-# user  system elapsed
-# 33.89    2.20   37.53
-
-#### Ignacio: Same as before
 if (!exists("svmFitFloor")) {
-  svmFit <- readRDS("svmFloorFinal.rds")
+  if (file.exists("svmFloorFinal.rds")) {
+    svmFitFloor <- readRDS("svmFloorFinal.rds")
+  }
+  else{
+    set.seed(123)
+    ctrl <- trainControl(method = "cv", number = 10)
+    system.time(svmFitFloor <- train(FLOOR ~ .,
+                                     data      = dfTrainingStand[, -which(names(dfTrainingStand) %in% c("LONGITUDE","LATITUDE"))],
+                                     method    = "svmLinear",
+                                     trControl = ctrl
+    )
+    )
+  }
 }
 
-#svmFitFloor <- readRDS("svmFloorFinal.rds")
 
 # Check results on test dataset  Accuracy : 0.9932   ,   Kappa : 0.9926 
 svmTestFloor <- predict(svmFitFloor, newdata = dfTestStand[, -which(names(dfTestStand) %in% c("LONGITUDE","LATITUDE"))])
@@ -137,17 +145,17 @@ svmValidFloor <- predict(svmFitFloor ,newdata = dfValidationStand[, -which(names
 print(svmCMVFloor <- confusionMatrix(svmValidFloor, dfValidationStand$FLOOR)) # Confusion Matrix
 #plotconfusion(svmCMVFloor)
 # Save Model
-saveRDS(svmFitFloor, file="svmFloor.rds")
+
+if (!exists("svmFloor.rds")) {
+  saveRDS(svmFitFloor, file="svmFloor.rds")
+}
+
 
 # C. MODELS FOR LATITUDE ----
 # When using on the unseen data we will add the building and floor from previous pred and use them too
 # for predicting the latitude 
 set.seed(123)
-ctrlRegression <- trainControl(method        = "repeatedcv",
-                               number        = 10,
-                               repeats       = 3,
-                               allowParallel = TRUE
-)
+
 
 # 1. RANDOM FOREST LATITUDE (CHOSEN) ----
 # 
@@ -159,39 +167,51 @@ bestmtry_rf_lat <- tuneRF(dfTraining[, -which(names(dfTraining) %in% c("LATITUDE
                       trace=TRUE,
                       plot=T)
 
-#### Ignacio: How to do this more generic in the next step.
 bestmtry_rf_lat <- as.data.frame(bestmtry_rf_lat)
 
-system.time(rfFitLatitude <- randomForest(x = dfTraining[, -which(names(dfTraining) %in% c("LONGITUDE","LATITUDE"))],
-                                          y = dfTraining$LATITUDE,
-                                          ntrees = 100,
-                                          importance = T,
-                                          # mtry = 88
-                                          mtry = bestmtry_rf_lat[which.min(bestmtry_rf_lat$OOBError),]$mtry
-)
-)
-# user  system elapsed
-# 752.86    1.36  771.61
+#### Ignacio: How to do this more generic in the next step.
+
+if (!exists("rfFitLatitude")) {
+  if (file.exists("rfLatitudeFinal.rds")) {
+    rfFitLatitude <- readRDS("rfLatitudeFinal.rds")
+  }
+  else{
+    set.seed(123)
+    ctrlRegression <- trainControl(method        = "repeatedcv",
+                                   number        = 10,
+                                   repeats       = 3,
+                                   allowParallel = TRUE
+    )
+    system.time(rfFitLatitude <- randomForest(x = dfTraining[, -which(names(dfTraining) %in% c("LONGITUDE","LATITUDE"))],
+                                              y = dfTraining$LATITUDE,
+                                              ntrees = 100,
+                                              importance = T,
+                                              # mtry = 88
+                                              mtry = bestmtry_rf_lat[which.min(bestmtry_rf_lat$OOBError),]$mtry
+    )
+    )
+    # Save Model
+    saveRDS(rfFitLatitude, file = "rfLatitude.rds")
+  }
+}
 
 # Bring model 
 
 #### Ignacio: Again, check if the variable exists, then if not, load the search
 #### for the model and load it.
-rfFitLatitude <- readRDS("rfLatitudeFinal.rds")
+if (!exists("rfLatitudeFinal")) {
+  rfFitLatitude <- readRDS("rfLatitudeFinal.rds") 
+}
 
 # Predict and evaluate on Test
 rfTestLatitude <- predict(rfFitLatitude, dfTest[, -which(names(dfTest) %in% c("LONGITUDE"))])
 print(postResample_rfTestLatitude <- postResample(rfTestLatitude, dfTest$LATITUDE))
 
-# RMSE Rsquared      MAE 
-# 3.815287 0.997192 2.148457 
 
 # Predict and evaluate on Validation
 rfValidLatitude <- predict(rfFitLatitude, dfValidation[, -which(names(dfValidation) %in% c("LONGITUDE"))])
 print(postResample_rfValidLatitude <- postResample(rfValidLatitude, dfValidation$LATITUDE))
 
-# RMSE  Rsquared       MAE 
-# 3.3220601 0.9979198 2.0181775 
 
 # Save absolute errors
 errors_latitude_rfTest <- as.data.frame(dfTest$LATITUDE - rfTestLatitude)
@@ -221,81 +241,71 @@ print(postResample_knnValidLatitude <- (postResample(knnValidLatitude ,dfValidat
 errors_latitude_knnTest <- as.data.frame(dfTestStand$LATITUDE - knnTestLatitude)
 errors_latitude_knnValid <- as.data.frame(dfValidationStand$LATITUDE - knnValidLatitude)
 
-# Save Model
-saveRDS(knnFitLatitude, file = "knnFitLatitude.rds")
-
 # D. MODELS FOR LONGITUDE ----
 # THESE MODELS HAVE VERY GOOD PERFORMANCE WHEN USING THE REAL VERIFIED DATA BUT ONCE WE ADD THE PREDICTED VALUES + ERRORS
 # THE PERFORMANCE WILL NOT BE AS GOOD
-set.seed(123)
-# 1. RANDOM FOREST LONGITUDE (CHOSEN)----
-
-bestmtry_rf_long <- tuneRF(dfTraining,
-                      dfTraining$LONGITUDE, ntreeTry=100,stepFactor=2,improve=0.05,trace=TRUE, plot=T)
-
-bestmtry_rf_long <- as.data.frame(bestmtry_rf_long)
-
-
-system.time(rfFitLongitude <- randomForest(x = dfTraining[, -which(names(dfTraining) %in% c("LONGITUDE"))],
-                                           y = dfTraining$LONGITUDE,
-                                           ntrees = 100,
-                                           importance = T,
-                                           #mtry = 88
-                                           mtry = bestmtry_rf_long[which.min(bestmtry_rf_long$OOBError),]$mtry
-)
-)
-
-# user  system elapsed
-# 684.86    1.73  711.69
-
-# Bring Model
-
-#### Ignacio: Same as before.
 if (!exists("rfFitLongitude")) {
-  svmFit <- readRDS("rfLongitudeFinal.rds")
+  if (file.exists("rfLatitudeFinal.rds")) {
+    rfFitLatitude <- readRDS("rfLatitudeFinal.rds")
+  }
+  else{
+    set.seed(123)
+    # 1. RANDOM FOREST LONGITUDE (CHOSEN)----
+    
+    bestmtry_rf_long <- tuneRF(dfTraining,
+                               dfTraining$LONGITUDE, ntreeTry=100,stepFactor=2,improve=0.05,trace=TRUE, plot=T)
+    
+    bestmtry_rf_long <- as.data.frame(bestmtry_rf_long)
+    
+    
+    system.time(rfFitLongitude <- randomForest(x = dfTraining[, -which(names(dfTraining) %in% c("LONGITUDE"))],
+                                               y = dfTraining$LONGITUDE,
+                                               ntrees = 100,
+                                               importance = T,
+                                               #mtry = 88
+                                               mtry = bestmtry_rf_long[which.min(bestmtry_rf_long$OOBError),]$mtry
+    )
+    )
+    saveRDS(rfFitLongitude, file = "rfLongitude.rds")
+  }
 }
-#rfFitLongitude <- readRDS("rfLongitudeFinal.rds")
 
 # Predict and evaluate on Test
 rfTestLongitude <- predict(rfFitLongitude, dfTest)
 print(postResample_rfTestLongitude <- postResample(rfTestLongitude, dfTest$LONGITUDE))
-# RMSE  Rsquared       MAE 
-# 3.0033925 0.9995042 1.6794705 
 
 # Predict and evaluate on Validation
 rfValidLongitude <- predict(rfFitLongitude, dfValidation)
 print(postResample_rfValidLongitude <- postResample(rfValidLongitude, dfValidation$LONGITUDE))
-# RMSE  Rsquared       MAE 
-# 3.0586017 0.9994846 1.6571688 
 
 # Save absolute errors
 errors_longitude_rfTest <- as.data.frame(dfTest$LONGITUDE - rfTestLongitude)
 errors_longitude_rfValid <- as.data.frame(dfValidation$LONGITUDE - rfValidLongitude)
 
-# Save Model
-saveRDS(rfFitLongitude, file = "rfLongitude.rds")
-
 # 2. KNN LONGITUDE  ----
-knnFitLongitude <- knnreg(LONGITUDE~., data = dfTrainingStand)
+if (!exists("knnFitLongitude")) {
+  if (file.exists("knnLongitude.rds")) {
+    knnFitLongitude <- readRDS("rfLatitudeFinal.rds")
+  }
+  else{
+    knnFitLongitude <- knnreg(LONGITUDE~., data = dfTrainingStand)
+    # Save model
+    saveRDS(knnFitLongitude, file = "knnLongitude.rds")
+  }
+}
+
 
 # Check results on test dataset  
 knnTestLongitude <- predict(knnFitLongitude, dfTestStand)
 print(postResample_knnTestLongitude <- postResample(knnTestLongitude,dfTestStand$LONGITUDE))
-# RMSE  Rsquared       MAE 
-# 4.4904191 0.9988656 1.9491605 
 
 # Check results on validation dataset        
 knnValidLongitude <- predict(knnFitLongitude, dfValidationStand)
 print(postResample_knnValidLongitude <- postResample(knnValidLongitude ,dfValidationStand$LONGITUDE))
-# RMSE  Rsquared       MAE 
-# 4.3068451 0.9989439 1.9432282 
 
 # Save absolute errors
 errors_longitude_knnTest <- as.data.frame(dfTestStand$LONGITUDE - knnTestLongitude)
 errors_longitude_knnValid <- as.data.frame(dfValidationStand$LONGITUDE - knnValidLongitude)
-
-# Save model
-saveRDS(knnFitLongitude, file = "knnLongitude.rds")
 
 #### TO DO:
 ####
