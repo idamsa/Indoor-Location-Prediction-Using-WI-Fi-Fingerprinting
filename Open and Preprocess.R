@@ -13,11 +13,24 @@ if ("pacman" %in% rownames(installed.packages()) == FALSE) {
   pacman::p_load(caret,ggplot2,dplyr,lubridate, plotly,readr,rpart,class,randomForest, kernlab, e1071, matlab, plyr)
 }
 
+# Get the location of the current script in order to be perfectly transferable
+# The variable "loc" contains full paths to any file with the same name as the
+# current script.
+# The "iloc", gets the current index inside the vector of potential matches.
+# The "myloc" gets the full path of the script.
+loc   <- grep("Open and Preprocess.R",list.files(recursive=TRUE),value=TRUE)
+iloc  <- which(unlist(gregexpr("/Open and Preprocess.R$",loc)) != -1)
+myloc <- paste(getwd(),loc[iloc],sep="/")
+# We set the working directory to the path of the script.
+setwd(substr(myloc,1,nchar(myloc)-nchar("Open and Preprocess.R")))
+
 # LOADING DATASETS----
 trainingData <- read.csv("trainingData.csv")
 validationData <- read.csv("validationData.csv")
 trainingData$inTrain <- TRUE
 validationData$inTrain <- FALSE
+
+#### Ignacio: Ioana, why do you merge both datasets? This shoud be justified.
 locationData <- rbind(trainingData, validationData) # Building the full Data set. 
 
 #INSPECTING, PREPROCESSING, VISUALIZATIONS ----
